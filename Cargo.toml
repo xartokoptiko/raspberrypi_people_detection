@@ -24,3 +24,5 @@ opencv = { version = "0.69.0", default-features = false, features = [
     "videoio",
     "objdetect"
 ]}
+rumqttc = "0.17"
+tokio = { version = "1", features = ["full"] }

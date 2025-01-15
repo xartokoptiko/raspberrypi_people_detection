@@ -1,10 +1,28 @@
 use opencv::{
-    core::{self, Rect, Size, Mat},
+    core::{self, Size, Mat},
     highgui, imgproc, prelude::*, videoio,
     objdetect::HOGDescriptor,
-    types::{VectorOfRect, VectorOff32},
+    types::VectorOfRect,
 };
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio::task;
+use tokio::time::{self, Duration};
+use rumqttc::{MqttOptions, AsyncClient, QoS};
+
+#[derive(Clone, Debug)]
+struct Person {
+    id: usize,
+    confidence_percentage: f32,
+    bbox: core::Rect,
+}
+
+impl PartialEq for Person {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && (self.bbox & other.bbox).area() > 0
+    }
+}
 
 fn non_maximum_suppression(boxes: &VectorOfRect, threshold: f32) -> VectorOfRect {
     let mut results = VectorOfRect::new();
@@ -36,7 +54,14 @@ fn non_maximum_suppression(boxes: &VectorOfRect, threshold: f32) -> VectorOfRect
     results
 }
 
-fn main() -> opencv::Result<()> {
+#[tokio::main]
+async fn main() -> opencv::Result<()> {
+    // Initialize MQTT client
+    let mut mqttoptions = MqttOptions::new("person_detector", "---.---.-.-", 1883);
+    mqttoptions.set_keep_alive(Duration::from_secs(60));
+    let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
+    let client = Arc::new(client);
+
     // Initialize the HOG descriptor with optimized parameters
     let mut hog = HOGDescriptor::default()?;
     hog.set_svm_detector(&HOGDescriptor::get_default_people_detector()?)?;
@@ -53,12 +78,27 @@ fn main() -> opencv::Result<()> {
 
     highgui::named_window("Frame", highgui::WINDOW_AUTOSIZE)?;
 
+    let prev_people_map: Arc<Mutex<HashMap<usize, Person>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    let mut next_person_id = 1; // Counter to assign unique IDs to each person
+
+    // Spawn a task to handle MQTT event loop
+    let mqtt_client = Arc::clone(&client);
+    tokio::spawn(async move {
+        loop {
+            match eventloop.poll().await {
+                Ok(_) => println!("MQTT event loop running."),
+                Err(e) => eprintln!("MQTT error: {}", e),
+            }
+        }
+    });
+
     loop {
         let mut frame = Mat::default();
         cam.read(&mut frame)?;
 
         if frame.empty() {
-            std::thread::sleep(Duration::from_millis(1));
+            time::sleep(Duration::from_millis(1)).await;
             continue;
         }
 
@@ -74,61 +114,130 @@ fn main() -> opencv::Result<()> {
         )?;
         let mut gray = Mat::default();
         imgproc::cvt_color(&processed_frame, &mut gray, imgproc::COLOR_BGR2GRAY, 0)?;
-        let mut thresholded = Mat::default();
-        imgproc::adaptive_threshold(&gray, &mut thresholded, 255.0, imgproc::ADAPTIVE_THRESH_MEAN_C, imgproc::THRESH_BINARY, 11, 2.0)?;
 
         // Detect people with optimized parameters
         let mut boxes = VectorOfRect::new();
         hog.detect_multi_scale(
             &processed_frame,
             &mut boxes,
-            0.2,                // hit_threshold
-            Size::new(8, 8),    // win_stride
-            Size::new(32, 32),  // padding
-            1.05,               // scale
-            5.0,                // final_threshold
-            false,              // use_meanshift_grouping
+            0.2,
+            Size::new(8, 8),
+            Size::new(32, 32),
+            1.05,
+            5.0,
+            false,
         )?;
 
         // Apply non-maximum suppression
         let filtered_boxes = non_maximum_suppression(&boxes, 0.5);
 
-        // Filter and draw detections
-        for rect in filtered_boxes.iter() {
-            // Compute confidence based on bounding box area
-            let confidence = (rect.area() as f32) / 1000.0; // Simple heuristic, you can modify this logic
-            let confidence_percentage = confidence.min(100.0); // Clamp to 100%
+        let mut new_people_map: HashMap<usize, Person> = HashMap::new();
+        let mut used_ids = vec![];
+        let mut has_changed = false;
 
-            if rect.width > 60 && rect.height > 120 {
-                imgproc::rectangle(
-                    &mut processed_frame,
-                    rect,
-                    core::Scalar::new(0.0, 255.0, 0.0, 0.0),
-                    2,
-                    imgproc::LINE_AA,
-                    0,
-                )?;
+        {
+            let mut prev_map = prev_people_map.lock().await;
 
-                // Display dynamic confidence score based on box area
-                let label = format!("Person: {:.2}%", confidence_percentage);
-                let font_scale = 0.5;
-                let thickness = 1;
-                let font = imgproc::FONT_HERSHEY_SIMPLEX;
-                let mut baseline = 0;
-                imgproc::get_text_size(&label, font, font_scale, thickness, &mut baseline)?;
+            if filtered_boxes.is_empty() {
+                if !prev_map.is_empty() {
+                    has_changed = true; // Only trigger change detection if previously there were people
+                    prev_map.clear();   // Clear tracking when no one is in the frame
+                    next_person_id = 1; // Reset the person ID counter
+                }
+            } else {
+                for rect in filtered_boxes.iter() {
+                    // Compute confidence based on bounding box area
+                    let confidence = (rect.area() as f32) / 1000.0; // Simple heuristic
+                    let confidence_percentage = confidence.min(100.0); // Clamp to 100%
 
-                imgproc::put_text(
-                    &mut processed_frame,
-                    &label,
-                    core::Point::new(rect.x, rect.y - 10),
-                    font,
-                    font_scale,
-                    core::Scalar::new(0.0, 255.0, 0.0, 0.0),
-                    thickness,
-                    imgproc::LINE_AA,
-                    false,
-                )?;
+                    if rect.width > 60 && rect.height > 120 {
+                        // Try to match with previous detections
+                        let mut matched_id = None;
+
+                        for (&id, person) in prev_map.iter() {
+                            if (person.bbox & rect).area() > 0 {
+                                matched_id = Some(id);
+                                break;
+                            }
+                        }
+
+                        let id = matched_id.unwrap_or_else(|| {
+                            let new_id = next_person_id;
+                            next_person_id += 1;
+                            new_id
+                        });
+
+                        used_ids.push(id);
+                        new_people_map.insert(
+                            id,
+                            Person {
+                                id,
+                                confidence_percentage,
+                                bbox: rect.clone(),
+                            },
+                        );
+                    }
+                }
+
+                // Check for changes in detection results
+                if *prev_map != new_people_map {
+                    has_changed = true;
+                }
+
+                // Update prev_map with the new people map
+                *prev_map = new_people_map.clone();
             }
+        }
+
+        // Only publish or print if something has changed
+        if has_changed {
+            if !new_people_map.is_empty() {
+                let client = Arc::clone(&client);
+                let message = new_people_map
+                    .iter()
+                    .map(|(id, person)| format!("{}: Person {} - {:.2}%", id, person.id, person.confidence_percentage))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+
+                println!("Detected persons:\n{}", message);
+
+                task::spawn(async move {
+                    println!("Attempting to publish to MQTT...");
+                    if let Err(e) = client.publish("person_detector", QoS::AtLeastOnce, false, message).await {
+                        eprintln!("Failed to publish message: {}", e);
+                    } else {
+                        println!("Message successfully published to MQTT.");
+                    }
+                });
+            } else {
+                println!("No people detected.");
+            }
+        }
+
+        // Draw bounding boxes
+        let mut processed_frame = frame.clone();
+        for person in new_people_map.values() {
+            imgproc::rectangle(
+                &mut processed_frame,
+                person.bbox,
+                core::Scalar::new(0.0, 255.0, 0.0, 0.0),
+                2,
+                imgproc::LINE_AA,
+                0,
+            )?;
+
+            let label = format!("Person {} - {:.2}%", person.id, person.confidence_percentage);
+            imgproc::put_text(
+                &mut processed_frame,
+                &label,
+                core::Point::new(person.bbox.x, person.bbox.y - 10),
+                imgproc::FONT_HERSHEY_SIMPLEX,
+                0.5,
+                core::Scalar::new(0.0, 255.0, 0.0, 0.0),
+                1,
+                imgproc::LINE_AA,
+                false,
+            )?;
         }
 
         highgui::imshow("Frame", &processed_frame)?;
@@ -142,4 +251,8 @@ fn main() -> opencv::Result<()> {
     highgui::destroy_all_windows()?;
 
     Ok(())
+
 }
+
+
+
