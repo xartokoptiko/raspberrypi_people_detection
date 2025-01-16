@@ -5,6 +5,7 @@ use opencv::{
     types::VectorOfRect,
 };
 use std::collections::HashMap;
+use std::env;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -56,8 +57,67 @@ fn non_maximum_suppression(boxes: &VectorOfRect, threshold: f32) -> VectorOfRect
 
 #[tokio::main]
 async fn main() -> opencv::Result<()> {
+
+    // Default values
+    let mut camera_index: i32 = 1;
+    let mut camera_frame_width: f64 = 1280.0; // Changed to f64
+    let mut camera_frame_height: f64 = 720.0; // Changed to f64
+    let mut broker_ip: String = "192.168.1.55".to_string();
+    let mut broker_ip_port: u16 = 8883; // Changed to u16
+
+    // Collect command-line arguments
+    let args: Vec<String> = env::args().collect();
+
+    // Update values if arguments are provided
+    if args.len() > 1 {
+        camera_index = args[1].parse().unwrap_or_else(|_| {
+            eprintln!("Error: camera_index must be an integer. Using default: {}", camera_index);
+            camera_index
+        });
+    }
+    if args.len() > 2 {
+        camera_frame_width = args[2].parse().unwrap_or_else(|_| {
+            eprintln!(
+                "Error: camera_frame_width must be a float. Using default: {}",
+                camera_frame_width
+            );
+            camera_frame_width
+        });
+    }
+    if args.len() > 3 {
+        camera_frame_height = args[3].parse().unwrap_or_else(|_| {
+            eprintln!(
+                "Error: camera_frame_height must be a float. Using default: {}",
+                camera_frame_height
+            );
+            camera_frame_height
+        });
+    }
+    if args.len() > 4 {
+        broker_ip = args[4].clone();
+    }
+    if args.len() > 5 {
+        broker_ip_port = args[5].parse().unwrap_or_else(|_| {
+            eprintln!(
+                "Error: broker_ip_port must be an unsigned integer. Using default: {}",
+                broker_ip_port
+            );
+            broker_ip_port
+        });
+    }
+
+    // Print the values to verify (optional)
+    println!("~~~~~~~ Environment Variables ~~~~~~~");
+    println!("Camera Index: {}", camera_index);
+    println!("Camera Frame Width: {}", camera_frame_width);
+    println!("Camera Frame Height: {}", camera_frame_height);
+    println!("Broker IP: {}", broker_ip);
+    println!("Broker IP Port: {}", broker_ip_port);
+    println!("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+
+
     // Initialize MQTT client
-    let mut mqttoptions = MqttOptions::new("person_detector", "---.---.-.-", 1883);
+    let mut mqttoptions = MqttOptions::new("person_detector", broker_ip, broker_ip_port);
     mqttoptions.set_keep_alive(Duration::from_secs(60));
     let (client, mut eventloop) = AsyncClient::new(mqttoptions, 10);
     let client = Arc::new(client);
@@ -67,14 +127,14 @@ async fn main() -> opencv::Result<()> {
     hog.set_svm_detector(&HOGDescriptor::get_default_people_detector()?)?;
 
     // Open webcam video stream
-    let mut cam = videoio::VideoCapture::new(0, videoio::CAP_ANY)?;
+    let mut cam = videoio::VideoCapture::new(camera_index, videoio::CAP_ANY)?;
     if !cam.is_opened()? {
         panic!("Unable to open default camera!");
     }
 
     // Increase resolution for better detection
-    cam.set(videoio::CAP_PROP_FRAME_WIDTH, 640.0)?;
-    cam.set(videoio::CAP_PROP_FRAME_HEIGHT, 480.0)?;
+    cam.set(videoio::CAP_PROP_FRAME_WIDTH, camera_frame_width)?;
+    cam.set(videoio::CAP_PROP_FRAME_HEIGHT, camera_frame_height)?;
 
     highgui::named_window("Frame", highgui::WINDOW_AUTOSIZE)?;
 
