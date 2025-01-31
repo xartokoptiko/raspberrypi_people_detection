@@ -51,7 +51,7 @@ To run this project, you need:
 1. Clone the repository:
 
     ```bash
-    git clone https://github.com/yourusername/raspberry-pi-people-detection.git
+    git clone https://github.com/xartokoptiko/raspberrypi_people_detection.git
     cd raspberry-pi-people-detection
     ```
 
