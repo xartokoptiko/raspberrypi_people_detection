@@ -6,7 +6,7 @@ This project utilizes a Raspberry Pi to detect people in real-time using a camer
 
 ## Features
 
-- Real-time people detection using a webcam (Not a pyCam) connected to Raspberry Pi.
+- Real-time people detection using a webcam (Not a pyCam) connected to Raspberry Pi via USB.
 - MQTT-based communication to publish the count of detected people.
 - Adjustable camera and broker parameters such as index, resolution, and broker configuration via command-line arguments.
 - Timestamp logging with ANSI color formatting for better visualization in the terminal.
