@@ -26,7 +26,7 @@ async fn main() -> opencv::Result<()> {
     let default_camera_index = 2;
     let default_camera_frame_width = 1280.0;
     let default_camera_frame_height = 720.0;
-    let default_broker_ip = "192.168.1.55".to_string();
+    let default_broker_ip = "192.168.1.78".to_string();
     let default_broker_ip_port = 1883;
 
     // Collect command-line arguments
@@ -117,12 +117,14 @@ async fn main() -> opencv::Result<()> {
             colored_log(&people_count.to_string(), "\x1b[32m")
         );
 
+        let send_message = format!("{}", &people_count.to_string());
+
 
         println!("{}", message);
 
         let client = Arc::clone(&client);
         task::spawn(async move {
-            if let Err(e) = client.publish("person_detector", QoS::AtLeastOnce, false, message).await {
+            if let Err(e) = client.publish("person_detector", QoS::AtLeastOnce, false, send_message).await {
                 eprintln!("Failed to publish message: {}", e);
             }
         });
