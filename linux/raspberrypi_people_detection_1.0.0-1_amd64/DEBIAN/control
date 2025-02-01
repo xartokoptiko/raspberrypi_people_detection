@@ -1,0 +1,8 @@
+Package: raspberrypi-people-detection
+Version: 1.0.0
+Section: base
+Priority: optional
+Architecture: all
+Depends:
+Maintainer: Lampros Karachristos <lamproskarachristos@yahoo.com>
+Description: Real-time people detection on Raspberry Pi using OpenCV and MQTT.

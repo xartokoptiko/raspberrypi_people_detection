@@ -126,6 +126,8 @@ async fn main() -> opencv::Result<()> {
         task::spawn(async move {
             if let Err(e) = client.publish("person_detector", QoS::AtLeastOnce, false, send_message).await {
                 eprintln!("Failed to publish message: {}", e);
+            } else {
+                println!("{}", message);
             }
         });
 
