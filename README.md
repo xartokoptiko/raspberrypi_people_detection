@@ -82,7 +82,7 @@ To run this project, you need:
 4. Run the program:
 
     ```bash
-    cargo run -- [camera_index] [frame_width] [frame_height] [broker_ip] [broker_port]
+    raspberrypi_people_detection [camera_index] [frame_width] [frame_height] [broker_ip] [broker_port]
     ```
 
    Replace the placeholders with the appropriate values. If no arguments are provided, the program will use default values:
